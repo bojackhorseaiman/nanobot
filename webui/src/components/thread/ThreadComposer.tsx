@@ -166,7 +166,7 @@ interface ThreadComposerProps {
   modelPresets?: ModelPresetOption[];
   modelOptionsControl?: ModelOptionsControlProps;
   onModelMenuOpenChange?: (open: boolean) => void;
-  onModelPresetChange?: (name: string) => void;
+  onModelPresetChange?: (name: string) => void | Promise<void>;
   imageInputBlocked?: boolean;
   onInspectImagePreset?: () => void;
   modelProvider?: string | null;
@@ -523,6 +523,7 @@ export function ThreadComposer({
   const [inlineError, setInlineError] = useState<string | null>(null);
   const showToast = useToast();
   const [sendPending, setSendPending] = useState(false);
+  const [modelSwitchPending, setModelSwitchPending] = useState(false);
   const [pathInspection, setPathInspection] = useState<{
     generation: number; scope: string; range: PastedPathRange; attachment?: LocalAttachment;
   } | null>(null);
@@ -622,13 +623,14 @@ export function ThreadComposer({
     pause: pauseQueue,
     send: sendQueuedPrompt,
   } = useQueuedPrompt(pendingQueueKey, { isStreaming, activeTurnId, completedTurnIds }, {
-    disabled: !!disabled || sendPending,
+    disabled: !!disabled || sendPending || modelSwitchPending,
     onSend,
     validate: validatePrompt,
     onSendAttempt: focusTextarea,
   });
   const queuedPrompt = queueSnapshot.prompt;
   const interactionDisabled = !!disabled || sendPending || queueSnapshot.sending;
+  const sendDisabled = interactionDisabled || modelSwitchPending;
   useEffect(() => {
     if (queueSnapshot.error) setInlineError(queueSnapshot.error);
   }, [queueSnapshot.error]);
@@ -803,7 +805,7 @@ export function ThreadComposer({
   const requiresModelSetup = modelNeedsSetup && !isUserShell;
   const hasComposerContent = value.trim().length > 0 || readyImages.length > 0;
   const canSend =
-    !interactionDisabled
+    !sendDisabled
     && !requiresModelSetup
     && !encoding
     && !hasErrors
@@ -814,7 +816,7 @@ export function ThreadComposer({
   const canQueueGuidance =
     isStreaming
     && !isUserShell
-    && !interactionDisabled
+    && !sendDisabled
     && !modelNeedsSetup
     && !encoding
     && !hasErrors
@@ -1889,7 +1891,17 @@ export function ThreadComposer({
       modelPresets={modelPresets}
       modelOptionsControl={modelOptionsControl}
       onMenuOpenChange={onModelMenuOpenChange}
-      onPresetChange={onModelPresetChange}
+      disabled={sendDisabled}
+      onPresetChange={onModelPresetChange && ((name) => {
+        setInlineError(null);
+        const selection = onModelPresetChange(name);
+        if (!selection) return;
+        setModelSwitchPending(true);
+        void selection.catch((error: unknown) => {
+          pauseQueue();
+          setInlineError(error instanceof Error ? error.message : t("thread.composer.modelSwitchUnconfirmed"));
+        }).finally(() => setModelSwitchPending(false));
+      })}
       onManageModels={onManageModels}
       onRequestComposerFocus={() => textareaRef.current?.focus()}
       provider={modelProvider}
@@ -2029,7 +2041,7 @@ export function ThreadComposer({
         {queuedPrompt ? (
           <QueuedPromptPreview
             prompt={queuedPrompt}
-            disabled={interactionDisabled}
+            disabled={sendDisabled}
             editDisabled={encoding || hasErrors}
             label={t("thread.composer.queued.label")}
             guideLabel={t("thread.composer.queued.guide")}

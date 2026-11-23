@@ -1,4 +1,5 @@
 import { uploadAttachments, uploadCapability, type AttachmentReference, type UploadCapability } from "../../../packages/client-events/attachments";
+import { isSystemCommandTurnId, systemCommandTurnId } from "../../../packages/client-events/system-command";
 import { DeliveryReceipts } from "../../../packages/client-events/delivery";
 import { decodeNotification } from "../../../packages/client-events/notifications";
 import type {
@@ -82,6 +83,8 @@ function summarizeInboundWsPayload(ev: InboundEvent): unknown {
   return row;
 }
 
+type SystemCommandReply = Extract<InboundEvent, { event: "message" }> | undefined;
+
 type Unsubscribe = () => void;
 type EventHandler = (ev: InboundEvent) => void;
 export interface TaskNotice {
@@ -162,7 +165,6 @@ interface PendingChatRequest extends PendingRequest<string> {
   phase: "queued" | "sent";
 }
 
-const SYSTEM_COMMAND_TURN_PREFIX = "webui-system:";
 const TURN_REJECTION_DETAILS = new Set([
   "access_denied",
   "attachment_rejected",
@@ -170,10 +172,6 @@ const TURN_REJECTION_DETAILS = new Set([
   "missing content",
   "workspace_scope_rejected",
 ]);
-
-export function isSystemCommandTurnId(value: string | null | undefined): value is string {
-  return typeof value === "string" && value.startsWith(SYSTEM_COMMAND_TURN_PREFIX);
-}
 
 export interface NanobotClientOptions {
   url: string;
@@ -268,7 +266,7 @@ export class NanobotClient {
   private goalStateByChatId = new Map<string, GoalStateWsPayload>();
   private pendingChatRequest: PendingChatRequest | null = null;
   private pendingTranscriptions = new Map<string, PendingRequest<string>>();
-  private pendingSystemCommands = new Map<string, PendingRequest<void>>();
+  private pendingSystemCommands = new Map<string, PendingRequest<SystemCommandReply>>();
   private pendingWebUIRequests = new Map<string, PendingWebUIRequest>();
   private sendQueue: Outbound[] = [];
   private reconnectAttempts = 0;
@@ -605,9 +603,10 @@ export class NanobotClient {
   }
 
   /** Ask the server to provision a new chat_id; resolves with the assigned id. */
-  newChat(timeoutMs: number = 5_000, workspaceScope?: WorkspaceScopePayload | null): Promise<string> {
+  newChat(timeoutMs: number = 5_000, workspaceScope?: WorkspaceScopePayload | null, modelPreset?: string | null): Promise<string> {
     return this.requestChat({
       type: "new_chat",
+      ...(modelPreset ? { model_preset: modelPreset } : {}),
       ...(workspaceScope ? { workspace_scope: workspaceScope } : {}),
     }, timeoutMs, "newChat");
   }
@@ -891,10 +890,10 @@ export class NanobotClient {
     return true;
   }
 
-  sendSystemCommand(chatId: string, command: string, timeoutMs = 5_000): Promise<void> {
+  sendSystemCommand(chatId: string, command: string, timeoutMs = 5_000): Promise<SystemCommandReply> {
     const normalized = command.trim();
-    const turnId = `${SYSTEM_COMMAND_TURN_PREFIX}${crypto.randomUUID()}`;
-    return new Promise<void>((resolve, reject) => {
+    const turnId = systemCommandTurnId();
+    return new Promise<SystemCommandReply>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingSystemCommands.delete(turnId);
         reject(new Error("system command timed out"));
@@ -1035,7 +1034,7 @@ export class NanobotClient {
           [parsed.detail, parsed.reason].filter(Boolean).join(":") || "server error",
         );
       } else if (parsed.event === "message" || parsed.event === "turn_end") {
-        this.resolveSystemCommand(turnId);
+        this.resolveSystemCommand(turnId, parsed.event === "message" ? parsed : undefined);
       }
       return;
     }
@@ -1288,12 +1287,12 @@ export class NanobotClient {
     }
   }
 
-  private resolveSystemCommand(turnId: string): void {
+  private resolveSystemCommand(turnId: string, reply: SystemCommandReply): void {
     const pending = this.pendingSystemCommands.get(turnId);
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingSystemCommands.delete(turnId);
-    pending.resolve();
+    pending.resolve(reply);
   }
 
   private rejectSystemCommand(turnId: string, detail: string): void {
