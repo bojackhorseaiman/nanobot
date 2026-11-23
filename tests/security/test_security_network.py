@@ -159,6 +159,61 @@ def test_blocks_sampled_addresses_from_internal_networks():
         assert "blocked" in err.lower() or "private" in err.lower()
 
 
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "224.0.0.1",          # multicast
+        "239.1.1.1",          # multicast
+        "240.0.0.1",          # reserved
+        "255.255.255.255",    # limited broadcast
+        "192.0.0.1",          # IETF protocol assignments
+        "192.0.2.1",          # TEST-NET-1
+        "192.88.99.1",        # 6to4 relay anycast
+        "198.18.0.1",         # benchmarking
+        "198.51.100.1",       # TEST-NET-2
+        "203.0.113.5",        # TEST-NET-3
+        "ff02::1",            # multicast v6
+        "2001:db8::1",        # documentation
+        "100::1",             # discard-only
+        "64:ff9b::1.2.3.4",   # NAT64 well-known prefix
+    ],
+)
+def test_blocks_non_global_special_use_ranges(ip: str) -> None:
+    """Non-global special-purpose ranges outside RFC1918 must be blocked (#6690)."""
+    configure_ssrf_whitelist([])
+    host = "special-use.example"
+    resolver = _fake_resolve_v6 if ":" in ip else _fake_resolve
+    with patch("nanobot.security.network.socket.getaddrinfo", resolver(host, [ip])):
+        ok, err = validate_url_target(f"http://{host}/")
+    assert not ok, f"expected {ip} to be blocked"
+    assert "blocked" in err.lower() or "private" in err.lower()
+
+
+def test_blocks_non_global_literal_hosts() -> None:
+    """Literal special-use IP hosts are rejected without mocked DNS (#6690)."""
+    for url in (
+        "https://255.255.255.255/",
+        "https://239.1.1.1/",
+        "https://203.0.113.5/",
+        "https://198.18.0.1/",
+        "https://[ff02::1]/",
+        "https://[2001:db8::1]/",
+    ):
+        ok, err = validate_url_target(url)
+        assert not ok, f"expected {url} to be blocked, got {err!r}"
+
+
+def test_whitelist_allows_special_use_range() -> None:
+    """Explicit whitelist entries still override the special-use blocking (#6690)."""
+    configure_ssrf_whitelist(["198.18.0.0/15"])
+    try:
+        with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve("proxy.example", ["198.18.0.42"])):
+            ok, err = validate_url_target("http://proxy.example/")
+        assert ok, f"whitelisted benchmarking range should be allowed, got: {err}"
+    finally:
+        configure_ssrf_whitelist([])
+
+
 def test_allows_public_ipv6():
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_v6("example.com", ["2606:4700::6810:84e5"])):
         ok, err = validate_url_target("http://example.com/")

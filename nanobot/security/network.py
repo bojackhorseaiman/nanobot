@@ -12,17 +12,29 @@ from urllib.request import getproxies, proxy_bypass
 import httpx
 
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("0.0.0.0/8"),         # "this network"
     ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),   # carrier-grade NAT
+    ipaddress.ip_network("100.64.0.0/10"),     # carrier-grade NAT
     ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),   # link-local / cloud metadata
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local / cloud metadata
     ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.0.0.0/24"),      # IETF protocol assignments
+    ipaddress.ip_network("192.0.2.0/24"),      # TEST-NET-1
+    ipaddress.ip_network("192.88.99.0/24"),    # 6to4 relay anycast (deprecated)
     ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("198.18.0.0/15"),     # benchmarking
+    ipaddress.ip_network("198.51.100.0/24"),   # TEST-NET-2
+    ipaddress.ip_network("203.0.113.0/24"),    # TEST-NET-3
+    ipaddress.ip_network("224.0.0.0/4"),       # multicast
+    ipaddress.ip_network("240.0.0.0/4"),       # reserved, incl. 255.255.255.255
     ipaddress.ip_network("::/128"),            # unspecified; may route to local host
     ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("64:ff9b::/96"),      # NAT64 well-known prefix
+    ipaddress.ip_network("100::/64"),          # discard-only
+    ipaddress.ip_network("2001:db8::/32"),     # documentation
     ipaddress.ip_network("fc00::/7"),          # unique local
     ipaddress.ip_network("fe80::/10"),         # link-local v6
+    ipaddress.ip_network("ff00::/8"),          # multicast v6
 ]
 
 _URL_RE = re.compile(r"https?://[^\s\"'`;|<>]+", re.IGNORECASE)
@@ -71,6 +83,12 @@ def _is_private(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     normalized = _normalize_addr(addr)
     if _allowed_networks and any(normalized in net for net in _allowed_networks):
         return False
+    # ``is_global`` is False for every special-purpose range (loopback, private,
+    # link-local, multicast, reserved, documentation, benchmarking, ...).  It is
+    # the catch-all guard so ranges missing from the explicit list above -- or
+    # added to the IANA special-purpose registry in the future -- stay blocked.
+    if not normalized.is_global:
+        return True
     return any(normalized in net for net in _BLOCKED_NETWORKS)
 
 
